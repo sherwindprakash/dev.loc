@@ -45,8 +45,20 @@ pipeline {
           sh '''
             echo "Copying files to /var/www/html..."
             sudo cp -r * /var/www/html/
+            
+            echo "Setting up permissions for Jenkins and web server..."
+            # Add jenkins user to www-data group
+            sudo usermod -a -G www-data jenkins
+            
+            # Set ownership to www-data with jenkins group access
             sudo chown -R www-data:www-data /var/www/html
-            sudo chmod -R 755 /var/www/html
+            
+            # Set permissions: owner and group can read/write/execute, others can read/execute
+            sudo chmod -R 775 /var/www/html
+            
+            # Ensure jenkins user has access to the directory
+            sudo setfacl -R -m u:jenkins:rwx /var/www/html
+            sudo setfacl -R -d -m u:jenkins:rwx /var/www/html
           '''
         }
       }
