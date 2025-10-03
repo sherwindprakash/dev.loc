@@ -29,37 +29,72 @@ pipeline {
       steps {
         echo 'Deploying to /var/www/html...'
         script {
-          // Create backup of existing files
-          sh '''
-            if [ -d "/var/www/html" ]; then
-              echo "Creating backup of existing files..."
-              sudo mkdir -p /var/www/html-backup-$(date +%Y%m%d-%H%M%S)
-              sudo cp -r /var/www/html/* /var/www/html-backup-$(date +%Y%m%d-%H%M%S)/ 2>/dev/null || true
-            fi
-          '''
+          // Check if we can write to /var/www/html directly
+          def canWriteToHtml = sh(script: 'test -w /var/www/html', returnStatus: true) == 0
           
-          // Ensure target directory exists
-          sh 'sudo mkdir -p /var/www/html'
-          
-          // Copy files to target directory
-          sh '''
-            echo "Copying files to /var/www/html..."
-            sudo cp -r * /var/www/html/
+          if (canWriteToHtml) {
+            echo 'Jenkins has write access to /var/www/html - deploying directly'
             
-            echo "Setting up permissions for Jenkins and web server..."
-            # Add jenkins user to www-data group
-            sudo usermod -a -G www-data jenkins
+            // Create backup of existing files
+            sh '''
+              if [ -d "/var/www/html" ] && [ "$(ls -A /var/www/html 2>/dev/null)" ]; then
+                echo "Creating backup of existing files..."
+                BACKUP_DIR="/tmp/html-backup-$(date +%Y%m%d-%H%M%S)"
+                mkdir -p "$BACKUP_DIR"
+                cp -r /var/www/html/* "$BACKUP_DIR/" 2>/dev/null || echo "Backup completed with warnings"
+                echo "Backup created at: $BACKUP_DIR"
+              fi
+            '''
             
-            # Set ownership to www-data with jenkins group access
-            sudo chown -R jenkins:jenkins /var/www/html
+            // Copy files to target directory
+            sh '''
+              echo "Copying files to /var/www/html..."
+              # Copy all files except Jenkinsfile and git files
+              for item in *; do
+                if [ "$item" != "Jenkinsfile" ] && [ "$item" != ".git" ] && [ "$item" != ".gitignore" ]; then
+                  echo "Copying: $item"
+                  cp -r "$item" /var/www/html/
+                fi
+              done
+              
+              # Set basic permissions
+              chmod -R 755 /var/www/html/ 2>/dev/null || echo "Could not set all permissions"
+              echo "Files deployed successfully to /var/www/html"
+            '''
+          } else {
+            echo 'No write access to /var/www/html - preparing files for manual deployment'
             
-            # Set permissions: owner and group can read/write/execute, others can read/execute
-            sudo chmod -R 775 /var/www/html
-            
-            # Ensure jenkins user has access to the directory
-            sudo setfacl -R -m u:jenkins:rwx /var/www/html
-            sudo setfacl -R -d -m u:jenkins:rwx /var/www/html
-          '''
+            // Prepare files in a staging directory
+            sh '''
+              STAGING_DIR="${WORKSPACE}/staging"
+              mkdir -p "$STAGING_DIR"
+              
+              echo "Preparing files in staging directory..."
+              # Copy all files except Jenkinsfile and git files
+              for item in *; do
+                if [ "$item" != "Jenkinsfile" ] && [ "$item" != ".git" ] && [ "$item" != ".gitignore" ] && [ "$item" != "staging" ]; then
+                  echo "Preparing: $item"
+                  cp -r "$item" "$STAGING_DIR/"
+                fi
+              done
+              
+              echo ""
+              echo "========================================="
+              echo "MANUAL DEPLOYMENT REQUIRED"
+              echo "========================================="
+              echo "Files are prepared in: $STAGING_DIR"
+              echo ""
+              echo "To complete deployment, run these commands as root:"
+              echo "  # Create backup (optional)"
+              echo "  cp -r /var/www/html /var/www/html-backup-\$(date +%Y%m%d-%H%M%S)"
+              echo ""
+              echo "  # Deploy files"
+              echo "  cp -r $STAGING_DIR/* /var/www/html/"
+              echo "  chown -R www-data:www-data /var/www/html"
+              echo "  chmod -R 755 /var/www/html"
+              echo "========================================="
+            '''
+          }
         }
       }
     }
@@ -67,11 +102,24 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         echo 'Verifying deployment...'
-        sh '''
-          echo "Checking deployed files:"
-          ls -la /var/www/html/
-          echo "Deployment verification completed."
-        '''
+        script {
+          def canWriteToHtml = sh(script: 'test -w /var/www/html', returnStatus: true) == 0
+          
+          if (canWriteToHtml) {
+            sh '''
+              echo "Checking deployed files in /var/www/html:"
+              ls -la /var/www/html/
+              echo "Direct deployment verification completed."
+            '''
+          } else {
+            sh '''
+              echo "Checking prepared files in staging:"
+              ls -la "${WORKSPACE}/staging/"
+              echo "Files are ready for manual deployment."
+              echo "Staging verification completed."
+            '''
+          }
+        }
       }
     }
   }
